@@ -13,7 +13,6 @@ async fn main() {
             let addr = format!("{}:{}", host, port);
             let c = client::Client { addr };
             c.request_vote(protocol::VoteRequest {
-                other_thing: "woot".to_string(),
                 term: 1,
                 candidate_id: 0,
                 last_log_index: 0,
@@ -25,7 +24,7 @@ async fn main() {
         cli::Commands::Serve { host, port } => {
             let addr = format!("{}:{}", host, port);
             let s = server::Server { addr };
-            s.listen().await;
+            let _ = s.listen().await;
         }
     }
 }

@@ -7,7 +7,6 @@ message VoteRequest {
   uint64 candidateId = 2;
   uint64 lastLogIndex = 3;
   uint64 lastLogTerm = 4;
-  string otherThing = 5;
 }
 
 message VoteResponse {
@@ -26,12 +25,21 @@ message AppendRequest {
 }
 
 message AppendResult {
-  uint64 id = 1;
-  uint64 term = 2;
-  bool voteGranted = 3;
+  uint64 term = 1;
+  bool success = 2;
 }
 
-service Raft { 
+
+message RPC {
+  enum Func { 
+    AppendEntries = 0; 
+    RequestVote = 1; 
+  }
+  Func call = 1;
+  bytes request = 2;
+}
+
+/* service Raft { 
   rpc AppendEntries(AppendRequest) returns (AppendResult); 
   rpc RequestVote(VoteRequest) returns (VoteResponse); 
-}
+} */
