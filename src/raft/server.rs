@@ -3,15 +3,32 @@ use prost::{bytes::Bytes, Message};
 use tokio::net::{TcpListener, TcpStream};
 
 pub struct Server {
+    // id: u64,
     pub addr: String,
 }
 
 impl Server {
-    pub fn handle_append_entries(req: protocol::AppendRequest) {
+    pub fn handle_append_entries(req: protocol::AppendRequest) -> Vec<u8> {
+        // heartbeat
+        if req.entries.len() == 0 {
+            println!("heartbeat");
+            return protocol::AppendResult {
+                term: req.term,
+                success: true,
+            }
+            .encode_to_vec();
+        }
         println!("Vote request in term {}!", req.term);
+        Vec::new()
     }
-    pub fn handle_vote_request(req: protocol::VoteRequest) {
+    pub fn handle_vote_request(req: protocol::VoteRequest) -> Vec<u8> {
         println!("Vote request in term {}!", req.term);
+
+        return protocol::VoteResponse {
+            term: req.term,
+            vote_grated: true,
+        }
+        .encode_to_vec();
     }
 
     async fn process(stream: TcpStream) -> Result<(), String> {
@@ -29,12 +46,20 @@ impl Server {
             Some(protocol::rpc::Func::RequestVote) => {
                 let req = protocol::VoteRequest::decode(Bytes::copy_from_slice(&rpc_req.request))
                     .unwrap();
-                Self::handle_vote_request(req);
+                let res = Self::handle_vote_request(req);
+                let n = stream
+                    .try_write(&res)
+                    .map_err(|e| format!("write res failed {}", e))?;
+                println!("wrote {} bytes", n)
             }
             Some(protocol::rpc::Func::AppendEntries) => {
                 let req = protocol::AppendRequest::decode(Bytes::copy_from_slice(&rpc_req.request))
                     .unwrap();
-                Self::handle_append_entries(req);
+                let res = Self::handle_append_entries(req);
+                let n = stream
+                    .try_write(&res)
+                    .map_err(|e| format!("write res failed {}", e))?;
+                println!("wrote {} bytes", n)
             }
             None => {
                 eprintln!("unknown rpc")
