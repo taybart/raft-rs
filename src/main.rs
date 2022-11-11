@@ -80,10 +80,20 @@ async fn main() {
                 }
             }
         }
-        cli::Commands::Serve { host, port } => {
+        cli::Commands::Serve { host, port, role } => {
             let addr = format!("{}:{}", host, port);
             let s = server::Server { addr };
-            match s.listen().await {
+            match s
+                .listen(
+                    vec![
+                        "http://127.0.0.1:9091".to_string(),
+                        "http://127.0.0.1:9092".to_string(),
+                        "http://127.0.0.1:9093".to_string(),
+                    ],
+                    raft::server::Role::Follower,
+                )
+                .await
+            {
                 Ok(()) => {}
                 Err(e) => {
                     println!("server error: {}", e)

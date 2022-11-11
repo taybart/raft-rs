@@ -18,7 +18,7 @@ pub struct Server {
 }
 
 #[derive(Default, PartialEq)]
-enum Role {
+pub enum Role {
     #[default]
     Follower,
     Candidate,
@@ -212,19 +212,18 @@ impl Server {
         }
     }
 
-    pub async fn listen(self) -> Result<(), String> {
+    pub async fn listen(self, friends: Vec<String>, role: Role) -> Result<(), String> {
         let listener = TcpListener::bind(self.addr.clone())
             .await
             .expect("failed to bind address");
+
         println!("listening on {}...", self.addr);
 
         // init state
-        let state = Arc::new(Mutex::new(State::new(vec![
-            "http://127.0.0.1:9091".to_string(),
-            "http://127.0.0.1:9092".to_string(),
-            "http://127.0.0.1:9093".to_string(),
-        ])));
-
+        let mut s = State::default();
+        s.role = role;
+        s.friends = friends;
+        let state = Arc::new(Mutex::new(s));
         {
             // internal timer
             let state = state.clone();
