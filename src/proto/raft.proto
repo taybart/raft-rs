@@ -2,6 +2,13 @@ syntax = "proto3";
 
 package raft;
 
+enum Role {
+  Follower = 0;
+  Candidate = 1;
+  Leader = 2;
+}
+
+/* rpc RequestVote(VoteRequest) returns (VoteResponse); */
 message VoteRequest {
   uint64 term = 1;
   uint64 candidateId = 2;
@@ -15,13 +22,18 @@ message VoteResponse {
 }
 
 
+/* rpc AppendEntries(AppendRequest) returns (AppendResult); */
+
+message LogEntry {
+  string data = 1;
+}
 message AppendRequest {
   uint64 id = 1;
   uint64 term = 2;
   uint64 leaderId = 3;
   uint64 prevLogIndex = 4;
   uint64 prevLogTerm = 5;
-  repeated string entries = 6;
+  repeated LogEntry entries = 6;
 }
 
 message AppendResult {
@@ -29,13 +41,14 @@ message AppendResult {
   bool success = 2;
 }
 
+/*** RPC ***/
+enum Function { 
+  AppendEntries = 0; 
+  RequestVote = 1; 
+}
 
 message RPC {
-  enum Func { 
-    AppendEntries = 0; 
-    RequestVote = 1; 
-  }
-  Func call = 1;
+  Function call = 1;
   bytes request = 2;
 }
 
