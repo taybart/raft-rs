@@ -56,14 +56,6 @@ pub struct State {
     friends: Vec<String>,
 }
 
-impl State {
-    pub fn new(friends: Vec<String>) -> State {
-        let mut s: State = Default::default();
-        s.friends = friends;
-        s
-    }
-}
-
 impl Server {
     pub fn handle_append_entries(state: SState, mut req: AppendRequest) -> Vec<u8> {
         let mut state = state.lock().unwrap();
