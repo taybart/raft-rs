@@ -15,6 +15,8 @@ pub enum Commands {
         host: String,
         #[arg(short, long, value_parser = port_in_range, default_value = "9090")]
         port: u16,
+        #[arg(long)]
+        rpc: String,
     },
     Serve {
         #[arg(default_value = "127.0.0.1")]
