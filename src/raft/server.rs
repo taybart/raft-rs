@@ -1,5 +1,7 @@
 use super::network::FRAME_SIZE;
-use super::protocol::{AppendRequest, AppendResult, LogEntry, VoteRequest, VoteResponse};
+use super::protocol::{
+    AppendRequest, AppendResult, DiscoverResponse, LogEntry, VoteRequest, VoteResponse,
+};
 use super::protocol::{Function, Rpc};
 use super::roles::Role::{Candidate, Follower, Leader};
 
@@ -46,7 +48,7 @@ pub struct State {
     _next_index: Vec<u64>,
     _match_index: Vec<u64>,
 
-    friends: Vec<&'static str>,
+    friends: Vec<String>,
 }
 /*
  * handle_append_entries: follows raft convention for heartbeat/out-of-sync
@@ -160,6 +162,8 @@ async fn process(state: SState, stream: TcpStream) -> Result<(), String> {
             let req = AppendRequest::decode(Bytes::copy_from_slice(&rpc_req.request)).unwrap();
             handle_append_entries(state, req)
         }
+        // should only handle leader => []follower
+        Some(Function::NetworkDiscovery) => Vec::new(), //handle_discover(state),
         None => {
             panic!("unknown rpc")
         }
@@ -312,12 +316,7 @@ async fn request_vote(state: SState) {
     }
 }
 
-pub async fn listen(
-    addr: String,
-    id: u64,
-    friends: Vec<&'static str>,
-    role: super::roles::Role,
-) -> Result<(), String> {
+pub async fn listen(addr: String, id: u64) -> Result<(), String> {
     let listener = TcpListener::bind(addr.clone())
         .await
         .expect("failed to bind address");
@@ -329,8 +328,6 @@ pub async fn listen(
     // init state, election timeout is randomized to help prevent stalemates
     let s = State {
         id,
-        role,
-        friends,
         election_timeout_ms: rng.gen_range(150..300),
         ..Default::default()
     };

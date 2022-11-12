@@ -7,3 +7,5 @@ pub mod network;
 pub mod roles;
 pub mod server;
 pub mod server_test;
+
+pub mod discovery;
