@@ -14,8 +14,6 @@ use tokio::{
     time::{sleep, Duration},
 };
 
-// should be randomly selected 150-300ms
-// const ELECTION_TIMEOUT_MS: u128 = 3_000;
 const HEARTBEAT_TIMEOUT_MS: u128 = 50;
 
 struct WrapInstant(std::time::Instant);
@@ -50,6 +48,10 @@ pub struct State {
 
     friends: Vec<&'static str>,
 }
+/*
+ * handle_append_entries: follows raft convention for heartbeat/out-of-sync
+ *                        also appends log entries to the log.
+ */
 pub fn handle_append_entries(state: SState, mut req: AppendRequest) -> Vec<u8> {
     let mut state = state.lock().unwrap();
 
@@ -87,6 +89,10 @@ pub fn handle_append_entries(state: SState, mut req: AppendRequest) -> Vec<u8> {
 
     ret.encode_to_vec()
 }
+
+/*
+ * handle_vote_request: accepts vote requests incase a leader dies or newbies show up
+ */
 pub fn handle_vote_request(state: SState, req: VoteRequest) -> Vec<u8> {
     println!(
         "vote request in term {} for {}!",
@@ -128,6 +134,9 @@ pub fn handle_vote_request(state: SState, req: VoteRequest) -> Vec<u8> {
     ret.encode_to_vec()
 }
 
+/*
+ * process: take rpc and translate/run it
+ */
 async fn process(state: SState, stream: TcpStream) -> Result<(), String> {
     stream
         .readable()
@@ -160,15 +169,20 @@ async fn process(state: SState, stream: TcpStream) -> Result<(), String> {
     Ok(())
 }
 
+/*
+ * tick: server janitor service
+ */
 async fn tick(state: SState) -> bool {
     let mut since_heartbeat = Instant::now();
     loop {
-        // 20ms tick
+        // 20ms tick, this just keeps the server from red lining
         sleep(Duration::from_millis(20)).await;
+        // keep mutex free as much as possible
         let mut should_vote = false;
         let mut should_heartbeat = false;
         if let Ok(mut s) = state.lock() {
-            // no leader!
+            // no leader! this probably means they are dead
+            // goto: election state, promote to candidate, increment term
             if s.last_leader_contact.0.elapsed().as_millis() > s.election_timeout_ms
                 && s.role != Leader
             {
@@ -178,21 +192,31 @@ async fn tick(state: SState) -> bool {
                     "no contact from leader, requesting election for term {}",
                     s.current_term
                 );
+                // lets pick a new leader
                 should_vote = true;
             }
+            // if we are the leader we need to talk to our loyal subjects
+            // so they know who is boss
             should_heartbeat =
                 since_heartbeat.elapsed().as_millis() > HEARTBEAT_TIMEOUT_MS && s.role == Leader;
         }
         if should_heartbeat {
+            // blast everyone with a nop append_entries
             heartbeat(state.clone()).await;
+            // reset arbitrary timer (save on network bw)
             since_heartbeat = Instant::now();
         }
         if should_vote {
+            // lets elect the most qualified (me), selfish election
             request_vote(state.clone()).await;
         }
     }
 }
 
+/*
+ * heartbeat: hits everyone in state.friends with a nop
+ * (append_entries with no logs)
+ */
 async fn heartbeat(state: SState) {
     let mut req = AppendRequest::default();
     let mut friends = Vec::new();
@@ -302,7 +326,7 @@ pub async fn listen(
 
     let mut rng = rand::thread_rng();
 
-    // init state
+    // init state, election timeout is randomized to help prevent stalemates
     let s = State {
         id,
         role,
@@ -311,12 +335,13 @@ pub async fn listen(
         ..Default::default()
     };
 
+    // create multi accessible shared state
     let state = Arc::new(Mutex::new(s));
     {
-        // internal timer
         let state = state.clone();
         tokio::spawn(async move {
-            // loop to change state?
+            // do "server" janitor work
+            // election timeout/leader jobs
             tick(state).await
         });
     }
