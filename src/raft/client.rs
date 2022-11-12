@@ -1,44 +1,64 @@
+use super::network::FRAME_SIZE;
 use super::protocol::{AppendRequest, AppendResult, Function, Rpc, VoteRequest, VoteResponse};
 use prost::{bytes::Bytes, Message};
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::time::Duration;
 
-pub struct Client {
-    pub addr: String,
+pub async fn request_vote(addr: String, req: VoteRequest) -> Result<VoteResponse, String> {
+    let b_res = do_rpc(
+        addr,
+        Rpc {
+            call: Function::RequestVote as i32,
+            request: req.encode_to_vec(),
+        },
+    )
+    .await?;
+    let res = VoteResponse::decode(Bytes::copy_from_slice(&b_res))
+        .map_err(|_| "failed to decode response")?;
+    Ok(res)
 }
 
-impl Client {
-    pub async fn request_vote(&self, req: VoteRequest) -> Result<VoteResponse, String> {
-        let mut rpc = Rpc::default();
-        rpc.set_call(Function::RequestVote);
-        rpc.request = req.encode_to_vec();
-        let b_res = self.call(rpc)?;
-        let res = VoteResponse::decode(Bytes::copy_from_slice(&b_res))
-            .map_err(|_| "failed to decode response")?;
-        Ok(res)
-    }
-    pub async fn append_entries(&self, req: AppendRequest) -> Result<AppendResult, String> {
-        let mut rpc = Rpc::default();
-        rpc.set_call(Function::AppendEntries);
-        rpc.request = req.encode_to_vec();
-        let b_res = self.call(rpc)?;
-        let res = AppendResult::decode(Bytes::copy_from_slice(&b_res))
-            .map_err(|_| "failed to decode response")?;
-        Ok(res)
-    }
+pub async fn append_entries(addr: String, req: AppendRequest) -> Result<AppendResult, String> {
+    let b_res = do_rpc(
+        addr,
+        Rpc {
+            call: Function::AppendEntries as i32,
+            request: req.encode_to_vec(),
+        },
+    )
+    .await?;
+    let res = AppendResult::decode(Bytes::copy_from_slice(&b_res))
+        .map_err(|_| "failed to decode response")?;
+    Ok(res)
+}
 
-    fn call(&self, req: Rpc) -> Result<Vec<u8>, String> {
-        let mut client = TcpStream::connect(self.addr.clone()).map_err(|_| "failed to connect")?;
-
-        client
-            .write_all(&req.encode_to_vec())
-            .map_err(|_| "failed to write request")?;
-
-        let mut buf = vec![0; 4096];
-        let n = client
-            .read(&mut buf)
-            .map_err(|_| "failed to read response")?;
-        buf.truncate(n);
-        Ok(buf)
+async fn do_rpc(addr: String, req: Rpc) -> Result<Vec<u8>, String> {
+    let client = match tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::net::TcpStream::connect(addr.clone()),
+    )
+    .await
+    {
+        Ok(ok) => ok,
+        Err(e) => panic!("client connection timeout {}", e),
     }
+    .map_err(|e| format!("could not connect to {} {}", addr.clone(), e))?;
+
+    client
+        .writable()
+        .await
+        .map_err(|e| format!("tcp stream not writeable {}", e))?;
+    client
+        .try_write(&req.encode_to_vec())
+        .map_err(|_| "failed to write request")?;
+
+    client
+        .readable()
+        .await
+        .map_err(|e| format!("tcp stream not readable {}", e))?;
+    let mut buf = vec![0; FRAME_SIZE];
+    let n = client
+        .try_read(&mut buf)
+        .map_err(|_| "failed to read response")?;
+    buf.truncate(n);
+    Ok(buf)
 }

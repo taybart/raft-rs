@@ -3,4 +3,7 @@ pub mod protocol {
 }
 
 pub mod client;
+pub mod network;
+pub mod roles;
 pub mod server;
+pub mod server_test;

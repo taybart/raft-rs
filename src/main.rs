@@ -1,5 +1,5 @@
 use clap::Parser;
-use raft::{client, protocol, server};
+use raft::{client, protocol, roles, server};
 
 pub mod cli;
 mod raft;
@@ -14,34 +14,36 @@ async fn main() {
             // encapulate better
             match rpc.as_str() {
                 "request_vote" => {
-                    let c = client::Client { addr: addr.clone() };
-                    let rv_res = c
-                        .request_vote(protocol::VoteRequest {
+                    let rv_res = client::request_vote(
+                        addr,
+                        protocol::VoteRequest {
                             term: 69,
                             candidate_id: 0,
                             last_log_index: 0,
                             last_log_term: 0,
-                        })
-                        .await
-                        .unwrap();
+                        },
+                    )
+                    .await
+                    .unwrap();
                     println!(
                         "vote granted: {} in term {}",
-                        rv_res.vote_grated, rv_res.term
+                        rv_res.vote_granted, rv_res.term
                     );
                 }
                 "ping" => {
-                    let c = client::Client { addr: addr.clone() };
-                    let ae_res_1 = c
-                        .append_entries(protocol::AppendRequest {
+                    let ae_res_1 = client::append_entries(
+                        addr,
+                        protocol::AppendRequest {
                             id: 0,
                             term: 69,
                             leader_id: 0,
                             entries: vec![],
                             prev_log_term: 0,
                             prev_log_index: 0,
-                        })
-                        .await
-                        .unwrap();
+                        },
+                    )
+                    .await
+                    .unwrap();
                     println!(
                         "heartbeat {}successful in term {}",
                         if !ae_res_1.success { "un" } else { "" },
@@ -51,10 +53,11 @@ async fn main() {
                 "append_entries" => {
                     let mut handles = Vec::new();
                     for i in 0..100 {
-                        let c = client::Client { addr: addr.clone() };
+                        let addr = addr.clone();
                         handles.push(tokio::spawn(async move {
-                            let res = c
-                                .append_entries(protocol::AppendRequest {
+                            let res = client::append_entries(
+                                addr,
+                                protocol::AppendRequest {
                                     id: i,
                                     term: 0,
                                     leader_id: 0,
@@ -63,9 +66,10 @@ async fn main() {
                                     }],
                                     prev_log_term: 0,
                                     prev_log_index: 0,
-                                })
-                                .await
-                                .expect("issue appending entries");
+                                },
+                            )
+                            .await
+                            .expect("issue appending entries");
                             if !res.success {
                                 eprintln!("appending log entries unsuccessful")
                             }
@@ -82,22 +86,56 @@ async fn main() {
         }
         cli::Commands::Serve { host, port, role } => {
             let addr = format!("{}:{}", host, port);
-            let s = server::Server { addr };
-            match s
-                .listen(
-                    vec![
-                        "http://127.0.0.1:9091".to_string(),
-                        "http://127.0.0.1:9092".to_string(),
-                        "http://127.0.0.1:9093".to_string(),
-                    ],
-                    raft::server::Role::Follower,
-                )
-                .await
-            {
-                Ok(()) => {}
-                Err(e) => {
-                    println!("server error: {}", e)
+
+            let role = roles::Role::from_string(role.clone()).unwrap();
+
+            // this should be generated also,
+            // discovery should be built into the protocol
+            let friends = match *port {
+                9090 => [
+                    "127.0.0.1:9091",
+                    "127.0.0.1:9092",
+                    "127.0.0.1:9093",
+                    "127.0.0.1:9094",
+                ],
+                9091 => [
+                    "127.0.0.1:9090",
+                    "127.0.0.1:9092",
+                    "127.0.0.1:9093",
+                    "127.0.0.1:9094",
+                ],
+                9092 => [
+                    "127.0.0.1:9090",
+                    "127.0.0.1:9091",
+                    "127.0.0.1:9093",
+                    "127.0.0.1:9094",
+                ],
+                9093 => [
+                    "127.0.0.1:9090",
+                    "127.0.0.1:9091",
+                    "127.0.0.1:9092",
+                    "127.0.0.1:9094",
+                ],
+                9094 => [
+                    "127.0.0.1:9090",
+                    "127.0.0.1:9091",
+                    "127.0.0.1:9092",
+                    "127.0.0.1:9093",
+                ],
+                _ => panic!("unknown server id"),
+            };
+            tokio::select! {
+                res = server::listen(
+                    addr,
+                    *port as u64,
+                    friends.to_vec().clone(),
+                    role,
+                    ) => {
+                    if let Err(e) = res {
+                        println!("listen failed: {}", e.to_string());
+                    }
                 }
+                _ = tokio::signal::ctrl_c() => {}
             }
         }
     }
