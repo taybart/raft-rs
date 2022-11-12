@@ -1,5 +1,5 @@
 use clap::Parser;
-use raft::{client, protocol, roles, server};
+use raft::{client, protocol, server};
 
 pub mod cli;
 mod raft;
@@ -13,23 +13,6 @@ async fn main() {
             let addr = format!("{}:{}", host, port);
             // encapulate better
             match rpc.as_str() {
-                "request_vote" => {
-                    let rv_res = client::request_vote(
-                        addr,
-                        protocol::VoteRequest {
-                            term: 69,
-                            candidate_id: 0,
-                            last_log_index: 0,
-                            last_log_term: 0,
-                        },
-                    )
-                    .await
-                    .unwrap();
-                    println!(
-                        "vote granted: {} in term {}",
-                        rv_res.vote_granted, rv_res.term
-                    );
-                }
                 "ping" => {
                     let ae_res_1 = client::append_entries(
                         addr,
@@ -84,52 +67,14 @@ async fn main() {
                 }
             }
         }
-        cli::Commands::Serve { host, port, role } => {
+        cli::Commands::Serve { host, port } => {
             let addr = format!("{}:{}", host, port);
 
-            let role = roles::Role::from_string(role.clone()).unwrap();
-
-            // this should be generated also,
-            // discovery should be built into the protocol
-            let friends = match *port {
-                9090 => [
-                    "127.0.0.1:9091",
-                    "127.0.0.1:9092",
-                    "127.0.0.1:9093",
-                    "127.0.0.1:9094",
-                ],
-                9091 => [
-                    "127.0.0.1:9090",
-                    "127.0.0.1:9092",
-                    "127.0.0.1:9093",
-                    "127.0.0.1:9094",
-                ],
-                9092 => [
-                    "127.0.0.1:9090",
-                    "127.0.0.1:9091",
-                    "127.0.0.1:9093",
-                    "127.0.0.1:9094",
-                ],
-                9093 => [
-                    "127.0.0.1:9090",
-                    "127.0.0.1:9091",
-                    "127.0.0.1:9092",
-                    "127.0.0.1:9094",
-                ],
-                9094 => [
-                    "127.0.0.1:9090",
-                    "127.0.0.1:9091",
-                    "127.0.0.1:9092",
-                    "127.0.0.1:9093",
-                ],
-                _ => panic!("unknown server id"),
-            };
             tokio::select! {
                 res = server::listen(
                     addr,
-                    *port as u64,
-                    friends.to_vec().clone(),
-                    role,
+                    *port as u64, // "id"
+                    // friends.to_vec().clone(),
                     ) => {
                     if let Err(e) = res {
                         println!("listen failed: {}", e.to_string());
