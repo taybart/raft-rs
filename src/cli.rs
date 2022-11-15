@@ -23,6 +23,8 @@ pub enum Commands {
         host: String,
         #[arg(short, long, value_parser = port_in_range, default_value = "9090")]
         port: u16,
+        #[arg(short, long, default_value = "false")]
+        discovery: bool,
     },
 }
 fn port_in_range(s: &str) -> Result<u16, String> {

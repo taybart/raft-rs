@@ -1,8 +1,36 @@
-use super::network::FRAME_SIZE;
-use super::protocol::{AppendRequest, AppendResult, Function, Rpc, VoteRequest, VoteResponse};
+use super::protocol::{
+    AppendRequest, AppendResult, DiscoverResponse, Function, Rpc, Server, VoteRequest, VoteResponse,
+};
+use super::FRAME_SIZE;
 use prost::{bytes::Bytes, Message};
 use std::time::Duration;
 
+pub async fn add_friend(addr: String, req: Server) -> Result<AppendResult, String> {
+    let b_res = do_rpc(
+        addr,
+        Rpc {
+            call: Function::AddFriend as i32,
+            request: req.encode_to_vec(),
+        },
+    )
+    .await?;
+    let res = AppendResult::decode(Bytes::copy_from_slice(&b_res))
+        .map_err(|_| "failed to decode response")?;
+    Ok(res)
+}
+pub async fn network_discovery(addr: String, req: Server) -> Result<DiscoverResponse, String> {
+    let b_res = do_rpc(
+        addr,
+        Rpc {
+            call: Function::NetworkDiscovery as i32,
+            request: req.encode_to_vec(),
+        },
+    )
+    .await?;
+    let res = DiscoverResponse::decode(Bytes::copy_from_slice(&b_res))
+        .map_err(|_| "failed to decode response")?;
+    Ok(res)
+}
 pub async fn request_vote(addr: String, req: VoteRequest) -> Result<VoteResponse, String> {
     let b_res = do_rpc(
         addr,

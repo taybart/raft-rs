@@ -3,9 +3,10 @@ pub mod protocol {
 }
 
 pub mod client;
-pub mod network;
 pub mod roles;
 pub mod server;
 pub mod server_test;
 
 pub mod discovery;
+
+pub const FRAME_SIZE: usize = 4_096;
