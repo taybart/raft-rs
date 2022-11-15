@@ -1,7 +1,7 @@
-use super::network::FRAME_SIZE;
 use super::protocol::{AppendRequest, AppendResult, LogEntry, VoteRequest, VoteResponse};
-use super::protocol::{Function, Rpc};
+use super::protocol::{Function, RaftErr, Rpc};
 use super::roles::Role::{Candidate, Follower, Leader};
+use super::FRAME_SIZE;
 
 use prost::{bytes::Bytes, Message};
 use rand::prelude::*;
@@ -46,7 +46,7 @@ pub struct State {
     _next_index: Vec<u64>,
     _match_index: Vec<u64>,
 
-    friends: Vec<&'static str>,
+    friends: Vec<crate::raft::protocol::Server>,
 }
 /*
  * handle_append_entries: follows raft convention for heartbeat/out-of-sync
@@ -70,6 +70,7 @@ pub fn handle_append_entries(state: SState, mut req: AppendRequest) -> Vec<u8> {
         state.current_term = req.term;
     }
 
+    // reset election counter
     state.last_leader_contact.0 = Instant::now();
 
     // heartbeat
@@ -109,11 +110,6 @@ pub fn handle_vote_request(state: SState, req: VoteRequest) -> Vec<u8> {
             println!("requested term is old");
             return ret.encode_to_vec();
         }
-        // if s.role == Leader {
-        //     ret.vote_granted = false;
-        //     println!("i am the captain of this term");
-        //     return ret.encode_to_vec();
-        // }
 
         // we are behind, reset
         if req.term > s.current_term {
@@ -160,8 +156,38 @@ async fn process(state: SState, stream: TcpStream) -> Result<(), String> {
             let req = AppendRequest::decode(Bytes::copy_from_slice(&rpc_req.request)).unwrap();
             handle_append_entries(state, req)
         }
+        Some(Function::AddFriend) => {
+            let req =
+                crate::raft::protocol::Server::decode(Bytes::copy_from_slice(&rpc_req.request))
+                    .unwrap();
+            if let Ok(mut s) = state.lock() {
+                for friend in s.friends.clone() {
+                    // TODO: check addr also?
+                    if friend.id != req.id {
+                        println!("wow! new friend in the network! {:?}", req);
+                        s.friends.push(req);
+                        break;
+                    }
+                }
+            }
+            AppendResult {
+                success: true,
+                ..Default::default()
+            }
+            .encode_to_vec()
+        }
+        // should only handle leader => []follower
+        Some(Function::NetworkDiscovery) => Vec::new(), //handle_discover(state),
         None => {
-            panic!("unknown rpc")
+            stream
+                .try_write(
+                    &RaftErr {
+                        msg: format!("wtf kind of rpc is that?").to_string(),
+                    }
+                    .encode_to_vec(),
+                )
+                .expect("writing response failed");
+            return Ok(());
         }
     };
 
@@ -220,6 +246,7 @@ async fn tick(state: SState) -> bool {
 async fn heartbeat(state: SState) {
     let mut req = AppendRequest::default();
     let mut friends = Vec::new();
+    // grab snapshot of state
     if let Ok(s) = state.lock() {
         req = AppendRequest {
             id: s.id,
@@ -232,15 +259,17 @@ async fn heartbeat(state: SState) {
         friends = s.friends.clone();
     }
 
+    // let everyone know i am still in charge
     let tasks: Vec<_> = friends
         .iter_mut()
         .map(|friend| {
             tokio::spawn(crate::raft::client::append_entries(
-                friend.to_string(),
+                friend.addr.to_string(),
                 req.clone(),
             ))
         })
         .collect();
+    // wait for the decree to be done
     for task in tasks {
         match task.await.unwrap() {
             Ok(res) => {
@@ -281,7 +310,7 @@ async fn request_vote(state: SState) {
         .iter_mut()
         .map(|friend| {
             tokio::spawn(crate::raft::client::request_vote(
-                friend.to_string(),
+                friend.addr.to_string(),
                 req.clone(),
             ))
         })
@@ -312,26 +341,30 @@ async fn request_vote(state: SState) {
     }
 }
 
-pub async fn listen(
-    addr: String,
-    id: u64,
-    friends: Vec<&'static str>,
-    role: super::roles::Role,
-) -> Result<(), String> {
+pub async fn listen(disco: String, addr: String, id: u64) -> Result<(), String> {
     let listener = TcpListener::bind(addr.clone())
         .await
         .expect("failed to bind address");
 
-    println!("listening on {}...", addr);
-
     let mut rng = rand::thread_rng();
+
+    print!("doing network discovery...");
+    // TODO: should resort to normal self promotion on failure
+    let disco_baby = crate::raft::client::network_discovery(
+        disco.clone(),
+        crate::raft::protocol::Server {
+            id,
+            addr: addr.clone(),
+        },
+    )
+    .await
+    .unwrap();
 
     // init state, election timeout is randomized to help prevent stalemates
     let s = State {
         id,
-        role,
-        friends,
         election_timeout_ms: rng.gen_range(150..300),
+        friends: disco_baby.friends.clone(),
         ..Default::default()
     };
 
@@ -345,6 +378,9 @@ pub async fn listen(
             tick(state).await
         });
     }
+    println!("listening on {}...", addr);
+
+    // regular request processing
     loop {
         let (socket, _) = listener
             .accept()

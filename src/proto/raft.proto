@@ -45,6 +45,12 @@ message AppendResult {
 enum Function { 
   AppendEntries = 0; 
   RequestVote = 1; 
+  NetworkDiscovery = 2;
+  AddFriend = 3;
+}
+
+message RaftErr {
+  string msg = 1;
 }
 
 message RPC {
@@ -52,7 +58,17 @@ message RPC {
   bytes request = 2;
 }
 
+message Server {
+  uint64 id = 1;
+  string addr = 2;
+}
+message DiscoverResponse {
+  /* Server leader = 1; */
+  repeated Server friends = 1;
+}
+
 /* service Raft { 
   rpc AppendEntries(AppendRequest) returns (AppendResult); 
   rpc RequestVote(VoteRequest) returns (VoteResponse); 
+  rpc Discover(DiscoverRequest) returns (DiscoverResponse)
 } */

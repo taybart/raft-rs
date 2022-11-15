@@ -1,5 +1,5 @@
 use clap::Parser;
-use raft::{client, protocol, server};
+use raft::{client, discovery, protocol, server};
 
 pub mod cli;
 mod raft;
@@ -67,20 +67,37 @@ async fn main() {
                 }
             }
         }
-        cli::Commands::Serve { host, port } => {
+        cli::Commands::Serve {
+            host,
+            port,
+            discovery,
+        } => {
             let addr = format!("{}:{}", host, port);
+            let disco = "localhost:6969".to_string();
 
-            tokio::select! {
-                res = server::listen(
-                    addr,
-                    *port as u64, // "id"
-                    // friends.to_vec().clone(),
-                    ) => {
-                    if let Err(e) = res {
-                        println!("listen failed: {}", e.to_string());
+            if *discovery {
+                tokio::select! {
+                    res = discovery::listen(disco) => {
+                        if let Err(e) = res {
+                            println!("listen failed: {}", e.to_string());
+                        }
                     }
+                    _ = tokio::signal::ctrl_c() => {}
                 }
-                _ = tokio::signal::ctrl_c() => {}
+            } else {
+                tokio::select! {
+                                    res = server::listen(
+                disco,
+                                        addr,
+                                        *port as u64, // "id"
+                                        // friends.to_vec().clone(),
+                                        ) => {
+                                        if let Err(e) = res {
+                                            println!("listen failed: {}", e.to_string());
+                                        }
+                                    }
+                                    _ = tokio::signal::ctrl_c() => {}
+                                }
             }
         }
     }
