@@ -288,15 +288,23 @@ async fn heartbeat(state: SState) {
         }
     }
 }
+
+/*
+ * request_vote: there is no leader heartbeat
+ * lets pick "us" as the new jefe
+ */
 async fn request_vote(state: SState) {
     let mut req = VoteRequest::default();
     let mut friends = Vec::new();
+    // lock up our state so we can reset
     if let Ok(mut s) = state.lock() {
+        // set voted for so zero value
         s.voted_for = 0;
         req = VoteRequest {
             term: s.current_term,
             candidate_id: s.id,
             last_log_index: s.last_applied,
+            // this is meaningless
             last_log_term: if s.current_term == 0 {
                 0
             } else {
@@ -306,6 +314,7 @@ async fn request_vote(state: SState) {
         friends = s.friends.clone();
     }
 
+    // have an election
     let tasks: Vec<_> = friends
         .iter_mut()
         .map(|friend| {
@@ -319,15 +328,19 @@ async fn request_vote(state: SState) {
     let mut yes_votes = 0;
     let mut responses = 0;
     for task in tasks {
+        // TODO: throw out non responders possibly
         if let Ok(res) = task.await.unwrap() {
+            // we got a response
             responses += 1;
             if res.vote_granted {
+                // they think we should be in charge
                 yes_votes += 1;
             }
         }
     }
     let mut election_won = false;
     if let Ok(mut s) = state.lock() {
+        // make sure we got a majority vote
         if yes_votes as f64 > responses as f64 / 2.0 || responses == 0 {
             println!("i am the leader for term {} woohoo!", s.current_term);
             s.role = Leader;
@@ -336,17 +349,17 @@ async fn request_vote(state: SState) {
         s.last_leader_contact.0 = Instant::now();
     }
 
+    // if we win immediately tell the flock
     if election_won {
         heartbeat(state.clone()).await;
     }
 }
 
 pub async fn listen(disco: String, addr: String, id: u64) -> Result<(), String> {
+    // grab the interface
     let listener = TcpListener::bind(addr.clone())
         .await
         .expect("failed to bind address");
-
-    let mut rng = rand::thread_rng();
 
     print!("doing network discovery...");
     // TODO: should resort to normal self promotion on failure
@@ -360,6 +373,8 @@ pub async fn listen(disco: String, addr: String, id: u64) -> Result<(), String> 
     .await
     .unwrap();
 
+    // get lazy thread random before we split
+    let mut rng = rand::thread_rng();
     // init state, election timeout is randomized to help prevent stalemates
     let s = State {
         id,
