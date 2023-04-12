@@ -1,7 +1,10 @@
-use super::protocol::{AppendRequest, AppendResult, LogEntry, VoteRequest, VoteResponse};
-use super::protocol::{Function, RaftErr, Rpc};
 use super::roles::Role::{Candidate, Follower, Leader};
 use super::FRAME_SIZE;
+use crate::protocol::{
+    AppendRequest, AppendResult, Function, LogEntry, RaftErr, Rpc, Server, VoteRequest,
+    VoteResponse,
+};
+use crate::raft::client as raft_client;
 
 use prost::{bytes::Bytes, Message};
 use rand::prelude::*;
@@ -46,7 +49,7 @@ pub struct State {
     _next_index: Vec<u64>,
     _match_index: Vec<u64>,
 
-    friends: Vec<crate::raft::protocol::Server>,
+    friends: Vec<Server>,
 }
 /*
  * handle_append_entries: follows raft convention for heartbeat/out-of-sync
@@ -60,21 +63,25 @@ pub fn handle_append_entries(state: SState, mut req: AppendRequest) -> Vec<u8> {
         success: true,
     };
 
-    // they are behind
-    if req.term < state.current_term {
-        ret.success = false;
-        return ret.encode_to_vec();
-    // we are behind
-    } else if req.term > state.current_term {
-        state.role = Follower;
-        state.current_term = req.term;
-    }
+    match req.term.cmp(&state.current_term) {
+        // they are behind
+        std::cmp::Ordering::Less => {
+            ret.success = false;
+            return ret.encode_to_vec();
+        }
+        // we are behind
+        std::cmp::Ordering::Greater => {
+            state.role = Follower;
+            state.current_term = req.term;
+        }
+        _ => {}
+    };
 
     // reset election counter
     state.last_leader_contact.0 = Instant::now();
 
     // heartbeat
-    if req.entries.len() == 0 {
+    if req.entries.is_empty() {
         return ret.encode_to_vec();
     }
 
@@ -140,10 +147,10 @@ async fn process(state: SState, stream: TcpStream) -> Result<(), String> {
         .map_err(|e| format!("stream not readable {}", e))?;
 
     let mut buf = vec![0; FRAME_SIZE];
-    let _n = match stream.try_read(&mut buf) {
+    match stream.try_read(&mut buf) {
         Ok(n) => buf.truncate(n),
         Err(e) => {
-            eprintln!("failed to read from socket; err = {:?}", e)
+            eprintln!("failed to read from socket; err = {e:?}")
         }
     };
     let rpc_req = Rpc::decode(Bytes::copy_from_slice(&buf)).unwrap();
@@ -157,14 +164,12 @@ async fn process(state: SState, stream: TcpStream) -> Result<(), String> {
             handle_append_entries(state, req)
         }
         Some(Function::AddFriend) => {
-            let req =
-                crate::raft::protocol::Server::decode(Bytes::copy_from_slice(&rpc_req.request))
-                    .unwrap();
+            let req = Server::decode(Bytes::copy_from_slice(&rpc_req.request)).unwrap();
             if let Ok(mut s) = state.lock() {
                 for friend in s.friends.clone() {
                     // TODO: check addr also?
                     if friend.id != req.id {
-                        println!("wow! new friend in the network! {:?}", req);
+                        println!("wow! new friend in the network! {req:?}");
                         s.friends.push(req);
                         break;
                     }
@@ -182,7 +187,7 @@ async fn process(state: SState, stream: TcpStream) -> Result<(), String> {
             stream
                 .try_write(
                     &RaftErr {
-                        msg: format!("wtf kind of rpc is that?").to_string(),
+                        msg: "wtf kind of rpc is that?".to_string(),
                     }
                     .encode_to_vec(),
                 )
@@ -263,7 +268,7 @@ async fn heartbeat(state: SState) {
     let tasks: Vec<_> = friends
         .iter_mut()
         .map(|friend| {
-            tokio::spawn(crate::raft::client::append_entries(
+            tokio::spawn(raft_client::append_entries(
                 friend.addr.to_string(),
                 req.clone(),
             ))
@@ -271,19 +276,14 @@ async fn heartbeat(state: SState) {
         .collect();
     // wait for the decree to be done
     for task in tasks {
-        match task.await.unwrap() {
-            Ok(res) => {
-                if !res.success {
-                    if let Ok(mut s) = state.lock() {
-                        println!("hb failed term {} {:?}", s.current_term, res);
-                        if s.current_term < res.term {
-                            s.current_term = res.term;
-                        }
+        if let Ok(res) = task.await.unwrap() {
+            if !res.success {
+                if let Ok(mut s) = state.lock() {
+                    println!("hb failed term {} {:?}", s.current_term, res);
+                    if s.current_term < res.term {
+                        s.current_term = res.term;
                     }
                 }
-            }
-            Err(_) => {
-                // eprintln!("{}", e);
             }
         }
     }
@@ -318,7 +318,7 @@ async fn request_vote(state: SState) {
     let tasks: Vec<_> = friends
         .iter_mut()
         .map(|friend| {
-            tokio::spawn(crate::raft::client::request_vote(
+            tokio::spawn(raft_client::request_vote(
                 friend.addr.to_string(),
                 req.clone(),
             ))
@@ -363,9 +363,9 @@ pub async fn listen(disco: String, addr: String, id: u64) -> Result<(), String> 
 
     print!("doing network discovery...");
     // TODO: should resort to normal self promotion on failure
-    let disco_baby = crate::raft::client::network_discovery(
+    let disco_baby = raft_client::network_discovery(
         disco.clone(),
-        crate::raft::protocol::Server {
+        Server {
             id,
             addr: addr.clone(),
         },

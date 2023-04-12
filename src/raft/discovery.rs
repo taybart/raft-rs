@@ -2,9 +2,9 @@
  * should only need to respond when a server starts
  * leader should exist on all states unless weak start
  */
-use super::protocol::{DiscoverResponse, Server};
-use super::protocol::{Function, RaftErr, Rpc};
 use super::FRAME_SIZE;
+use crate::protocol::{DiscoverResponse, Server};
+use crate::protocol::{Function, RaftErr, Rpc};
 
 use prost::{bytes::Bytes, Message};
 
@@ -32,7 +32,7 @@ pub async fn handle_discovery(state: SState, req: Server) -> Vec<u8> {
     // grab state snapshot
     if let Ok(mut s) = state.lock() {
         // check if this is a new node
-        if s.in_network.len() != 0 {
+        if !s.in_network.is_empty() {
             for server in s.clone().in_network {
                 if server.id == req.id {
                     in_network = true;
@@ -78,14 +78,14 @@ async fn process(state: SState, stream: TcpStream) -> Result<(), String> {
     stream
         .readable()
         .await
-        .map_err(|e| format!("stream not readable {}", e))?;
+        .map_err(|e| format!("stream not readable {e}"))?;
 
     let mut buf = vec![0; FRAME_SIZE];
-    let _n = match stream.try_read(&mut buf) {
+    match stream.try_read(&mut buf) {
         Ok(n) => buf.truncate(n),
         Err(e) => {
             // TODO: send real error out
-            eprintln!("failed to read from socket; err = {:?}", e)
+            eprintln!("failed to read from socket: {e}")
         }
     };
     let req = Rpc::decode(Bytes::copy_from_slice(&buf)).unwrap();
@@ -101,7 +101,7 @@ async fn process(state: SState, stream: TcpStream) -> Result<(), String> {
                     stream
                         .try_write(
                             &RaftErr {
-                                msg: format!("wtf dumb dumb {}", e).to_string(),
+                                msg: format!("wtf dumb dumb {e}"),
                             }
                             .encode_to_vec(),
                         )
@@ -113,7 +113,7 @@ async fn process(state: SState, stream: TcpStream) -> Result<(), String> {
             stream
                 .try_write(
                     &RaftErr {
-                        msg: format!("wtf kind of rpc is that?").to_string(),
+                        msg: "wtf kind of rpc is that?".to_string(),
                     }
                     .encode_to_vec(),
                 )
