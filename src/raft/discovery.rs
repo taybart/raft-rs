@@ -2,12 +2,14 @@
  * should only need to respond when a server starts
  * leader should exist on all states unless weak start
  */
-use super::FRAME_SIZE;
-use crate::protocol::{DiscoverResponse, Server};
-use crate::protocol::{Function, RaftErr, Rpc};
+use crate::{
+    protocol::{DiscoverResponse, Function, RaftErr, Rpc, Server},
+    raft,
+    raft::FRAME_SIZE,
+};
 
+use anyhow::{Context, Result};
 use prost::{bytes::Bytes, Message};
-
 use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -57,7 +59,7 @@ pub async fn handle_discovery(state: SState, req: Server) -> Vec<u8> {
     // if this is a new node broadcast to all current nodes
     if !in_network {
         for friend in friends {
-            crate::raft::client::add_friend(
+            raft::client::add_friend(
                 friend.addr,
                 Server {
                     id: req.id,
@@ -74,11 +76,8 @@ pub async fn handle_discovery(state: SState, req: Server) -> Vec<u8> {
  * process: take discoveries rpc and translate/run it
  * TODO: return network error
  */
-async fn process(state: SState, stream: TcpStream) -> Result<(), String> {
-    stream
-        .readable()
-        .await
-        .map_err(|e| format!("stream not readable {e}"))?;
+async fn process(state: SState, stream: TcpStream) -> Result<()> {
+    stream.readable().await.context("stream not readable")?;
 
     let mut buf = vec![0; FRAME_SIZE];
     match stream.try_read(&mut buf) {
@@ -125,23 +124,22 @@ async fn process(state: SState, stream: TcpStream) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn listen(addr: String) -> Result<(), String> {
+pub async fn listen(addr: String) -> Result<()> {
     let listener = TcpListener::bind(addr.clone())
         .await
         .expect("failed to bind address");
 
     // init state, election timeout is randomized to help prevent stalemates
-    let s = State {
+    let state = Arc::new(Mutex::new(State {
         ..Default::default()
-    };
-    let state = Arc::new(Mutex::new(s));
+    }));
 
-    println!("discovery: listening on {}...", addr);
+    println!("discovery: listening on {addr}...");
     loop {
         let (socket, _) = listener
             .accept()
             .await
-            .map_err(|_| "failed to accept incoming connection")?;
+            .context("failed to accept incoming connection")?;
 
         let state = state.clone();
         tokio::spawn(async move {

@@ -1,16 +1,22 @@
-use super::roles::Role::{Candidate, Follower, Leader};
-use super::FRAME_SIZE;
-use crate::protocol::{
-    AppendRequest, AppendResult, Function, LogEntry, RaftErr, Rpc, Server, VoteRequest,
-    VoteResponse,
+use crate::{
+    protocol::{
+        AppendRequest, AppendResult, Function, LogEntry, RaftErr, Rpc, Server, VoteRequest,
+        VoteResponse,
+    },
+    raft,
+    raft::{
+        roles::Role::{Candidate, Follower, Leader},
+        FRAME_SIZE,
+    },
 };
-use crate::raft::client as raft_client;
 
+use anyhow::{Context, Result};
 use prost::{bytes::Bytes, Message};
 use rand::prelude::*;
 use std::{
+    cmp::Ordering,
     sync::{Arc, Mutex},
-    time::Instant,
+    time,
 };
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -18,12 +24,18 @@ use tokio::{
 };
 
 const HEARTBEAT_TIMEOUT_MS: u128 = 50;
+const TICK_MS: u64 = 20;
 
-struct WrapInstant(std::time::Instant);
+struct Instant(std::time::Instant);
 
-impl Default for WrapInstant {
+impl Default for Instant {
     fn default() -> Self {
-        WrapInstant(Instant::now())
+        Instant(time::Instant::now())
+    }
+}
+impl Instant {
+    fn now() -> Self {
+        Instant(time::Instant::now())
     }
 }
 
@@ -37,7 +49,7 @@ pub struct State {
     voted_for: u64,
     log: Vec<LogEntry>,
 
-    last_leader_contact: WrapInstant,
+    last_leader_contact: Instant,
     // now dynamic?
     election_timeout_ms: u128,
 
@@ -65,12 +77,12 @@ pub fn handle_append_entries(state: SState, mut req: AppendRequest) -> Vec<u8> {
 
     match req.term.cmp(&state.current_term) {
         // they are behind
-        std::cmp::Ordering::Less => {
+        Ordering::Less => {
             ret.success = false;
             return ret.encode_to_vec();
         }
         // we are behind
-        std::cmp::Ordering::Greater => {
+        Ordering::Greater => {
             state.role = Follower;
             state.current_term = req.term;
         }
@@ -78,7 +90,7 @@ pub fn handle_append_entries(state: SState, mut req: AppendRequest) -> Vec<u8> {
     };
 
     // reset election counter
-    state.last_leader_contact.0 = Instant::now();
+    state.last_leader_contact = Instant::now();
 
     // heartbeat
     if req.entries.is_empty() {
@@ -89,7 +101,7 @@ pub fn handle_append_entries(state: SState, mut req: AppendRequest) -> Vec<u8> {
     state.commit_index += 1;
 
     println!(
-        "updated log idx({}) {:?} from {}",
+        "updated log idx({}) {} from {}",
         state.commit_index,
         state.log.len(),
         req.id,
@@ -140,17 +152,14 @@ pub fn handle_vote_request(state: SState, req: VoteRequest) -> Vec<u8> {
 /*
  * process: take rpc and translate/run it
  */
-async fn process(state: SState, stream: TcpStream) -> Result<(), String> {
-    stream
-        .readable()
-        .await
-        .map_err(|e| format!("stream not readable {}", e))?;
+async fn process(state: SState, stream: TcpStream) -> Result<()> {
+    stream.readable().await.context("stream not readable")?;
 
     let mut buf = vec![0; FRAME_SIZE];
     match stream.try_read(&mut buf) {
         Ok(n) => buf.truncate(n),
         Err(e) => {
-            eprintln!("failed to read from socket; err = {e:?}")
+            eprintln!("failed to read from socket; err = {e}")
         }
     };
     let rpc_req = Rpc::decode(Bytes::copy_from_slice(&buf)).unwrap();
@@ -196,7 +205,7 @@ async fn process(state: SState, stream: TcpStream) -> Result<(), String> {
         }
     };
 
-    stream.try_write(&res).expect("writing response failed");
+    stream.try_write(&res).context("writing response failed")?;
     Ok(())
 }
 
@@ -204,10 +213,10 @@ async fn process(state: SState, stream: TcpStream) -> Result<(), String> {
  * tick: server janitor service
  */
 async fn tick(state: SState) -> bool {
-    let mut since_heartbeat = Instant::now();
+    let mut since_heartbeat = time::Instant::now();
     loop {
         // 20ms tick, this just keeps the server from red lining
-        sleep(Duration::from_millis(20)).await;
+        sleep(Duration::from_millis(TICK_MS)).await;
         // keep mutex free as much as possible
         let mut should_vote = false;
         let mut should_heartbeat = false;
@@ -235,7 +244,7 @@ async fn tick(state: SState) -> bool {
             // blast everyone with a nop append_entries
             heartbeat(state.clone()).await;
             // reset arbitrary timer (save on network bw)
-            since_heartbeat = Instant::now();
+            since_heartbeat = time::Instant::now();
         }
         if should_vote {
             // lets elect the most qualified (me), selfish election
@@ -268,7 +277,7 @@ async fn heartbeat(state: SState) {
     let tasks: Vec<_> = friends
         .iter_mut()
         .map(|friend| {
-            tokio::spawn(raft_client::append_entries(
+            tokio::spawn(raft::client::append_entries(
                 friend.addr.to_string(),
                 req.clone(),
             ))
@@ -318,7 +327,7 @@ async fn request_vote(state: SState) {
     let tasks: Vec<_> = friends
         .iter_mut()
         .map(|friend| {
-            tokio::spawn(raft_client::request_vote(
+            tokio::spawn(raft::client::request_vote(
                 friend.addr.to_string(),
                 req.clone(),
             ))
@@ -346,7 +355,7 @@ async fn request_vote(state: SState) {
             s.role = Leader;
             election_won = true;
         }
-        s.last_leader_contact.0 = Instant::now();
+        s.last_leader_contact = Instant::now();
     }
 
     // if we win immediately tell the flock
@@ -355,7 +364,7 @@ async fn request_vote(state: SState) {
     }
 }
 
-pub async fn listen(disco: String, addr: String, id: u64) -> Result<(), String> {
+pub async fn listen(disco: String, addr: String, id: u64) -> Result<()> {
     // grab the interface
     let listener = TcpListener::bind(addr.clone())
         .await
@@ -363,7 +372,7 @@ pub async fn listen(disco: String, addr: String, id: u64) -> Result<(), String> 
 
     print!("doing network discovery...");
     // TODO: should resort to normal self promotion on failure
-    let disco_baby = raft_client::network_discovery(
+    let disco_baby = raft::client::network_discovery(
         disco.clone(),
         Server {
             id,
@@ -400,7 +409,7 @@ pub async fn listen(disco: String, addr: String, id: u64) -> Result<(), String> 
         let (socket, _) = listener
             .accept()
             .await
-            .map_err(|_| "failed to accept incoming connection")?;
+            .context("failed to accept incoming connection")?;
 
         let state = state.clone();
         tokio::spawn(async move {

@@ -1,3 +1,4 @@
+use anyhow::Result;
 use clap::Parser;
 use raft::{client, discovery, protocol, server};
 
@@ -5,28 +6,30 @@ mod cli;
 mod raft;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     let args = cli::Args::parse();
+    let id = rand::random::<u64>();
 
+    println!("id: {id}");
     match &args.command {
         cli::Commands::Connect { host, port, rpc } => {
-            let addr = format!("{}:{}", host, port);
+            let addr = format!("{host}:{port}");
             // encapulate better
             match rpc.as_str() {
                 "ping" => {
                     let ae_res_1 = client::append_entries(
                         addr,
                         protocol::AppendRequest {
-                            id: 0,
-                            term: 69,
-                            leader_id: 0,
+                            id,
+                            term: 1,
+                            leader_id: 1,
                             entries: vec![],
                             prev_log_term: 0,
                             prev_log_index: 0,
                         },
                     )
-                    .await
-                    .unwrap();
+                    .await?;
+                    // .unwrap();
                     println!(
                         "heartbeat {}successful in term {}",
                         if !ae_res_1.success { "un" } else { "" },
@@ -35,15 +38,15 @@ async fn main() {
                 }
                 "append_entries" => {
                     let mut handles = Vec::new();
-                    for i in 0..100 {
+                    for _ in 0..10 {
                         let addr = addr.clone();
                         handles.push(tokio::spawn(async move {
                             let res = client::append_entries(
                                 addr,
                                 protocol::AppendRequest {
-                                    id: i,
-                                    term: 0,
-                                    leader_id: 0,
+                                    id,
+                                    term: 1,
+                                    leader_id: 1,
                                     entries: vec![protocol::LogEntry {
                                         data: "test".to_string(),
                                     }],
@@ -63,7 +66,7 @@ async fn main() {
                     }
                 }
                 _ => {
-                    eprintln!("unknown rpc must be one of [request_vote, ping, append_entries]")
+                    eprintln!("unknown rpc must be one of [request_vote, ping, append_entries]");
                 }
             }
         }
@@ -72,7 +75,7 @@ async fn main() {
             port,
             discovery,
         } => {
-            let addr = format!("{}:{}", host, port);
+            let addr = format!("{host}:{port}");
             let disco = "localhost:6969".to_string();
 
             if *discovery {
@@ -86,7 +89,7 @@ async fn main() {
                 }
             } else {
                 tokio::select! {
-                    res = server::listen( disco, addr, *port as u64) => {
+                    res = server::listen( disco, addr, id) => {
                         if let Err(e) = res {
                             println!("listen failed: {e}");
                         }
@@ -96,4 +99,5 @@ async fn main() {
             }
         }
     }
+    Ok(())
 }
