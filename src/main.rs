@@ -5,6 +5,17 @@ use raft::{client, discovery, protocol, server};
 mod cli;
 mod raft;
 
+/*
+ * TODO: Disco heartbeat and drop dead nodes
+ *       Disco leader announce
+ *       Disco announce dead nodes or servers request current layout
+ *       Disco get leader endpoint
+ *       Server "do work" (append entries) with a client
+ *       Server distribute appended logs
+ *       Server do commit call after consensus
+ *       Server maybe use rwlock instead of mutex
+ */
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = cli::Args::parse();

@@ -90,6 +90,7 @@ pub fn handle_append_entries(state: SState, mut req: AppendRequest) -> Vec<u8> {
     };
 
     // reset election counter
+
     state.last_leader_contact = Instant::now();
 
     // heartbeat
@@ -129,9 +130,10 @@ pub fn handle_vote_request(state: SState, req: VoteRequest) -> Vec<u8> {
             println!("requested term is old");
             return ret.encode_to_vec();
         }
-
         // we are behind, reset
         if req.term > s.current_term {
+            println!("write lock attempt");
+            println!("write lock success");
             s.role = Follower;
             s.current_term = req.term;
             s.voted_for = 0;
@@ -144,7 +146,7 @@ pub fn handle_vote_request(state: SState, req: VoteRequest) -> Vec<u8> {
                 "vote request response voted for {} in term {}",
                 s.voted_for, s.current_term
             );
-        };
+        }
     }
     ret.encode_to_vec()
 }
@@ -165,6 +167,7 @@ async fn process(state: SState, stream: TcpStream) -> Result<()> {
     let rpc_req = Rpc::decode(Bytes::copy_from_slice(&buf)).unwrap();
     let res = match Function::from_i32(rpc_req.call) {
         Some(Function::RequestVote) => {
+            println!("processing vote request");
             let req = VoteRequest::decode(Bytes::copy_from_slice(&rpc_req.request)).unwrap();
             handle_vote_request(state, req)
         }
@@ -173,6 +176,7 @@ async fn process(state: SState, stream: TcpStream) -> Result<()> {
             handle_append_entries(state, req)
         }
         Some(Function::AddFriend) => {
+            println!("processing add friend");
             let req = Server::decode(Bytes::copy_from_slice(&rpc_req.request)).unwrap();
             if let Ok(mut s) = state.lock() {
                 for friend in s.friends.clone() {
@@ -220,12 +224,22 @@ async fn tick(state: SState) -> bool {
         // keep mutex free as much as possible
         let mut should_vote = false;
         let mut should_heartbeat = false;
-        if let Ok(mut s) = state.lock() {
+        let mut should_elect = false;
+        if let Ok(s) = state.lock() {
             // no leader! this probably means they are dead
             // goto: election state, promote to candidate, increment term
             if s.last_leader_contact.0.elapsed().as_millis() > s.election_timeout_ms
                 && s.role != Leader
             {
+                should_elect = true;
+            }
+            // if we are the leader we need to talk to our loyal subjects
+            // so they know who is boss
+            should_heartbeat =
+                since_heartbeat.elapsed().as_millis() > HEARTBEAT_TIMEOUT_MS && s.role == Leader;
+        }
+        if should_elect {
+            if let Ok(mut s) = state.lock() {
                 s.role = Candidate;
                 s.current_term += 1;
                 println!(
@@ -235,10 +249,6 @@ async fn tick(state: SState) -> bool {
                 // lets pick a new leader
                 should_vote = true;
             }
-            // if we are the leader we need to talk to our loyal subjects
-            // so they know who is boss
-            should_heartbeat =
-                since_heartbeat.elapsed().as_millis() > HEARTBEAT_TIMEOUT_MS && s.role == Leader;
         }
         if should_heartbeat {
             // blast everyone with a nop append_entries
@@ -370,7 +380,7 @@ pub async fn listen(disco: String, addr: String, id: u64) -> Result<()> {
         .await
         .expect("failed to bind address");
 
-    print!("doing network discovery...");
+    println!("doing network discovery...");
     // TODO: should resort to normal self promotion on failure
     let disco_baby = raft::client::network_discovery(
         disco.clone(),
@@ -380,7 +390,7 @@ pub async fn listen(disco: String, addr: String, id: u64) -> Result<()> {
         },
     )
     .await
-    .unwrap();
+    .context("network discovery")?;
 
     // get lazy thread random before we split
     let mut rng = rand::thread_rng();
@@ -399,6 +409,7 @@ pub async fn listen(disco: String, addr: String, id: u64) -> Result<()> {
         tokio::spawn(async move {
             // do "server" janitor work
             // election timeout/leader jobs
+            println!("starting tick");
             tick(state).await
         });
     }

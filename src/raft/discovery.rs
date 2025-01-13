@@ -143,7 +143,7 @@ pub async fn listen(addr: String) -> Result<()> {
 
         let state = state.clone();
         tokio::spawn(async move {
-            process(state, socket).await.unwrap();
+            process(state, socket).await.expect("listen failed");
         });
     }
 }

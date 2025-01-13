@@ -1,3 +1,4 @@
+use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use std::ops::RangeInclusive;
 
@@ -27,14 +28,14 @@ pub enum Commands {
         discovery: bool,
     },
 }
-fn port_in_range(s: &str) -> Result<u16, String> {
+fn port_in_range(s: &str) -> Result<u16> {
     const PORT_RANGE: RangeInclusive<usize> = 1..=65535;
     let port: usize = s
         .parse()
-        .map_err(|_| format!("`{}` is not a valid port number", s))?;
+        .with_context(|| format!("`{}` is not a valid port number", s))?;
     if PORT_RANGE.contains(&port) {
         Ok(port as u16)
     } else {
-        Err("port out of range".to_string())
+        Err(anyhow!("port out of range"))
     }
 }
